@@ -125,6 +125,7 @@ def upload_local_artifacts(
     parent_dir: str,
     uploader: S3Uploader,
     extension: Optional[str] = None,
+    no_compression: Optional[bool] = False,
 ) -> str:
     """
     Upload local artifacts referenced by the property at given resource and
@@ -166,9 +167,14 @@ def upload_local_artifacts(
 
     local_path = make_abs_path(parent_dir, local_path)
 
+    compression_type = zipfile.ZIP_DEFLATED
+    if no_compression[0]:
+        compression_type = zipfile.ZIP_STORED
+        LOG.debug("Disabling zip compression.", property_name, resource_id)
+
     # Or, pointing to a folder. Zip the folder and upload
     if is_local_folder(local_path):
-        return zip_and_upload(local_path, uploader, extension)
+        return zip_and_upload(local_path, uploader, extension=extension, compression_type=compression_type)
 
     # Path could be pointing to a file. Upload the file
     if is_local_file(local_path):
@@ -184,13 +190,13 @@ def resource_not_packageable(resource_dict):
     return False
 
 
-def zip_and_upload(local_path: str, uploader: S3Uploader, extension: Optional[str]) -> str:
-    with zip_folder(local_path) as (zip_file, md5_hash):
+def zip_and_upload(local_path: str, uploader: S3Uploader, extension: Optional[str], compression_type: str) -> str:
+    with zip_folder(local_path, compression_type=compression_type) as (zip_file, md5_hash):
         return uploader.upload_with_dedup(zip_file, precomputed_md5=md5_hash, extension=extension)
 
 
 @contextmanager
-def zip_folder(folder_path):
+def zip_folder(folder_path, compression_type):
     """
     Zip the entire folder and return a file to the zip. Use this inside
     a "with" statement to cleanup the zipfile after it is used.
@@ -210,7 +216,7 @@ def zip_folder(folder_path):
     md5hash = dir_checksum(folder_path, followlinks=True)
     filename = os.path.join(tempfile.gettempdir(), "data-" + md5hash)
 
-    zipfile_name = make_zip(filename, folder_path)
+    zipfile_name = make_zip(filename, folder_path, compression_type=compression_type)
     try:
         yield zipfile_name, md5hash
     finally:
@@ -218,7 +224,7 @@ def zip_folder(folder_path):
             os.remove(zipfile_name)
 
 
-def make_zip(file_name, source_root):
+def make_zip(file_name, source_root, compression_type):
     """
     Create a zip file from the source directory
 
@@ -235,7 +241,6 @@ def make_zip(file_name, source_root):
     """
     zipfile_name = "{0}.zip".format(file_name)
     source_root = os.path.abspath(source_root)
-    compression_type = zipfile.ZIP_DEFLATED
     with open(zipfile_name, "wb") as f:
         with contextlib.closing(zipfile.ZipFile(f, "w", compression_type)) as zf:
             for root, _, files in os.walk(source_root, followlinks=True):
